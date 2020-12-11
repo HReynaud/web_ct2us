@@ -1,7 +1,8 @@
+from typing import final
 import numpy as np
 import nibabel as nib
 import streamlit as st
-
+from math import tan, pi
 from CTHandler import *
 
 
@@ -9,31 +10,56 @@ def clamp(data, imin=0.0, imax=1.0, omin=0.0, omax=1.0):
     data = data.astype(np.float)
     if imin != None:
         data[data<imin] = imin
+    else:
+        imin = data.min()
     if imax != None:
         data[data>imax] = imax
+    else:
+        imax = data.max()
+    # data = (data - imin)/(imax - imin)
     data = (data - data.min())/(data.max() - data.min())
     return data * (omax-omin) + omin
 
-def draw_line_spe(data, index, color=(1.0,0.0,0.0), axis=0):
+def draw_line_spe(data, index, slope=0, color=(1.0,0.0,0.0), axis=0):
     # print(data.ndim, data.shape)
     if data.ndim == 2:
             data = np.stack((data,)*3, axis=-1)
     # print(data.ndim, data.shape)
-    
     if index < 0 or index >= data.shape[not axis]:
         return data
     
     for i in range(data.shape[not axis]-1):
+        indexws = minmax(int(slope*i+index), 0, data.shape[axis]-1)
         if axis == 0:
-            data[index,i,...] = color
+            data[indexws,i,...] = color
         else:
-            data[i,index,...] = color
+            data[i,indexws,...] = color
     
     return data
 
+def get_slope(angle, sx, sy):
+    # print(sx, sy)
+    return tan(angle/180*pi)*sx/sy
+
+def final_size(data, size):
+    fsx, fsy = data.shape
+    # crop
+    max_length = min(fsx, fsy)//2
+    data = data[fsx//2-max_length:fsx//2+max_length,fsy//2-max_length:fsy//2+max_length]
+    # resize
+    coef = size/data.shape[0]
+    data = scipy.ndimage.zoom(data,(coef, coef), order=0)
+    
+    return data
+
+def minmax(value, vmin, vmax):
+    value = min(vmax, value)
+    value = max(vmin, value)
+    return value
+
 class Engine():
     def __init__(self):
-        self.input_folder = "/home/hadrien/Bureau/PhD Year 1/Research/WEB_US_GEN/DATASET"
+        self.input_folder = "DATASET"
         
         self.files_list = list()
         self.ref = None
@@ -90,10 +116,17 @@ class Engine():
         self.img = self.img[int(center-256):int(center+256), int(center-256):int(center+256)]
         return self.img
     
-    def get_image_sa_at_index(self, index, imin=100.0, imax=300.0):
-        
+    def get_image_sa_at_index(self, index, imin=100.0, imax=300.0, y=0, z=0):
+        sx, sy, sz = self.data.shape
         self.img_sa = clamp(self.data[:,:,int(self.data.shape[2]/2)], imin=None, imax=None, omin=0.0, omax=1.0)
-        self.img_sa = draw_line_spe(self.img_sa, int(index),color=(1.0, 0., 0.))
+        
+        # Display second slope by showing were the plan finishes
+        nidx = sz*get_slope(z, sx, sz)+index
+        self.img_sa = draw_line_spe(self.img_sa, nidx, slope=get_slope(y, sx, sy), color=(0.5, 0., 0.))
+        
+        self.img_sa = draw_line_spe(self.img_sa, index, slope=get_slope(y, sx, sy), color=(1.0, 0., 0.))
+        
+        
         # print("img_sa",self.img_sa.shape, self.img_sa.min(), self.img_sa.max())
 
         i = 2
@@ -159,7 +192,7 @@ class Engine():
         # print("d",w_d, h_d, "p", padding_a, padding_b, "w", w_min,w_max, "h",h_min, h_max)
         
         self.samp = self.img[w_min:w_max,h_min:h_max]
-        print(self.samp.shape)
+        # print(self.samp.shape)
         return self.samp
     
     # @st.cache(suppress_st_warning=True)
@@ -188,3 +221,40 @@ class Engine():
         
         return self.img_us
         
+    def get_tilted_img_at_index(self, angle_y, angle_z, index, imin, imax):
+        # self.data = clamp(self.data, imin, imax, omin=0.0, omax=1.0)
+        self.slider_value = index
+        sx, sy, sz = self.data.shape
+        # xc = index
+        # yc = sy//2
+        a  = get_slope(angle_y, sx, sy)
+        b  = get_slope(angle_z, sx, sz)
+        # a  = angle_y/45
+        # b  = angle_z/45
+        c  = index #int(yc - xc*a)
+        
+        y, z = np.meshgrid(range(sy), range(sz), indexing='ij')
+
+        # print(angle_y, angle_y/pi, tan(angle_y), tan(angle_y/180*pi), sy)
+        # print(a, b, c)
+    
+        x = np.array(a*y + b*z + c).astype(int)
+        # print(x.min(), x.max())
+        x[x >= sx] = sx-1
+        x[x <  0 ] = 0
+        # name = file_name+'_'+str(int(a*45))+'_'+str(int(c*45))+file_format
+        # print('1',data[x,y,z].shape)
+        # img = final_size(self.data[x,y,z], 512)
+        # print('2',img.shape)
+        # Image.fromarray(img.astype(np.uint8)).save(os.path.join(dest, name))
+        # print(name,'generated')
+        
+        # self.img = final_size(self.data[x,y,z], 512).astype(np.uint8)
+        # self.img = clamp(self.img, imin, imax, omin=0.0, omax=1.0)
+        
+        # self.img = final_size(self.data[x,y,z], 512).astype(np.uint8)
+        self.img = clamp(self.data[x,y,z], imin, imax, omin=0.0, omax=1.0)
+        self.img = final_size(self.img, 512)
+        
+        
+        return self.img
